@@ -47,6 +47,13 @@ impl ClientHandler {
             return Err(anyhow!("Unknown protocol version: {protocol_version}"));
         }
 
+        log::info!(
+            "Client ({:?} - {}) - Connected (protocol: {})",
+            self.id,
+            self.stream.peer_addr()?,
+            protocol_version
+        );
+
         let mut buffer = Vec::new();
         loop {
             let frame_size = self.stream.read_u32::<BigEndian>()? as usize;

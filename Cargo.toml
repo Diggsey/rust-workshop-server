@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+hyper = { version = "0.14", features = ["server", "tcp", "http1", "http2"] }
 anyhow = "1.0.64"
 log = "0.4.7"
 pretty_env_logger = "0.4.0"
@@ -13,3 +14,14 @@ byteorder = "1.4.3"
 serde = { version = "1.0.144", features = ["derive", "rc"] }
 serde_json = "1.0.85"
 postcard = { version = "1.0.2", features = ["alloc"] }
+dotenvy = "0.15.3"
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
+tower = { version = "0.4.11", features = ["make"] }
+tower-http = { version = "0.3.4", features = ["fs", "set-header"] }
+glib = { git = "https://github.com/gtk-rs/gtk-rs-core" }
+gst = { package = "gstreamer" }
+gst-app = { package = "gstreamer-app" }
+gst-base = { package = "gstreamer-base" }
+gst-video = { package = "gstreamer-video" }
+ges = { package = "gstreamer-editing-services" }
+gst-pbutils = { package = "gstreamer-pbutils" }

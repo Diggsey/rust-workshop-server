@@ -1,4 +1,4 @@
-use std::{net::TcpListener, sync::mpsc, thread};
+use std::{fs, net::TcpListener, sync::mpsc, thread};
 
 use client_id::ClientId;
 use log::error;
@@ -37,6 +37,10 @@ pub enum ClientCommand {
 fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     let _ = pretty_env_logger::try_init();
+
+    // Wipe the live video directory before starting
+    let _ = fs::remove_dir_all("static/livevideo");
+    fs::create_dir_all("static/livevideo")?;
 
     let listener = TcpListener::bind("0.0.0.0:1234")?;
     let (client_tx, client_rx) = mpsc::sync_channel(256);

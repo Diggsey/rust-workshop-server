@@ -1,16 +1,22 @@
 use std::{
+    collections::HashMap,
+    fs, mem,
     sync::{mpsc, Arc, Mutex},
     thread,
     time::Instant,
 };
 
+use gio::{traits::FileExt, Cancellable, File, FileCreateFlags, FileOutputStream};
 use gst::{
     prelude::{Cast, GstBinExtManual, ObjectExt},
     traits::ElementExt,
-    MessageView,
+    Element, MessageView,
 };
+use serde::Serialize;
 
-use crate::{protocol::Vec3, server_state::TileAddr, TILES_X, TILES_Y, TILE_SIZE};
+use crate::{
+    client_id::ClientId, protocol::Vec3, server_state::TileAddr, TILES_X, TILES_Y, TILE_SIZE,
+};
 
 #[derive(Debug)]
 pub enum OutputEvent {
@@ -19,13 +25,55 @@ pub enum OutputEvent {
 
 #[derive(Debug)]
 pub struct BlitTileEvent {
+    pub client_id: ClientId,
     pub addr: TileAddr,
     pub name: String,
     pub pixels: Vec<Vec3>,
+    pub time: f64,
+}
+
+#[derive(Serialize, Clone)]
+struct ClientState {
+    current_count: u32,
+    total_count: u32,
+    average_time: f64,
+    name: String,
+}
+
+#[derive(Serialize, Clone)]
+struct MetaState {
+    tiles: Vec<Option<ClientId>>,
+    clients: HashMap<ClientId, ClientState>,
+    tiles_x: usize,
+    tiles_y: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct MetaBlitTile {
+    client_id: ClientId,
+    tile: usize,
+    time: f64,
+    name: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+enum MetaActionPayload {
+    Snapshot(MetaState),
+    BlitTile(MetaBlitTile),
+}
+
+#[derive(Serialize, Clone)]
+struct MetaAction {
+    ts: u64,
+    payload: MetaActionPayload,
 }
 
 struct Accumulator {
     data: Vec<u8>,
+    meta_state: MetaState,
+    meta_actions: Vec<MetaAction>,
+    meta_filename: String,
 }
 
 const WIDTH: usize = TILES_X * TILE_SIZE;
@@ -49,8 +97,9 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
             .field("profile", "baseline")
             .build(),
     );
-    sink.set_property("location", "static/segment%05d.ts");
-    sink.set_property("playlist-location", "static/playlist.m3u8");
+    sink.set_property("location", "static/livevideo/segment%05d.ts");
+    sink.set_property("playlist-location", "static/livevideo/playlist.m3u8");
+    sink.set_property("target-duration", 3u32);
 
     pipeline.add_many(&[&src, &videoconvert, &encode, &caps, &sink])?;
     gst::Element::link_many(&[&src, &videoconvert, &encode, &caps, &sink])?;
@@ -71,18 +120,58 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     appsrc.set_format(gst::Format::Time);
 
     let acc = Arc::new(Mutex::new(Accumulator {
-        data: vec![255; video_info.size()],
+        data: vec![0x40; video_info.size()],
+        meta_state: MetaState {
+            tiles: vec![None; TILES_X * TILES_Y],
+            clients: HashMap::new(),
+            tiles_x: TILES_X,
+            tiles_y: TILES_Y,
+        },
+        meta_actions: Vec::new(),
+        meta_filename: String::new(),
     }));
     let acc2 = acc.clone();
+    let acc3 = acc.clone();
 
     let begin = Instant::now();
+    sink.connect_closure(
+        "get-fragment-stream",
+        false,
+        glib::closure!(move |_elem: &Element, filename: &str| -> FileOutputStream {
+            let new_filename = format!("{}.json", filename);
+            let (old_actions, old_filename) = {
+                let mut acc_guard = acc3.lock().unwrap();
+                let mut new_actions = Vec::new();
+                new_actions.push(MetaAction {
+                    ts: begin.elapsed().as_millis() as u64,
+                    payload: MetaActionPayload::Snapshot(acc_guard.meta_state.clone()),
+                });
+                (
+                    mem::replace(&mut acc_guard.meta_actions, new_actions),
+                    mem::replace(&mut acc_guard.meta_filename, new_filename),
+                )
+            };
+
+            if !old_filename.is_empty() {
+                fs::write(old_filename, serde_json::to_string(&old_actions).unwrap()).unwrap();
+            }
+
+            let file = File::for_path(filename);
+            file.create(FileCreateFlags::REPLACE_DESTINATION, Cancellable::NONE)
+                .unwrap()
+        }),
+    );
+    sink.connect_closure(
+        "delete-fragment",
+        false,
+        glib::closure!(move |_elem: &Element, filename: &str| {
+            let json_filename = format!("{}.json", filename);
+            let _ = fs::remove_file(json_filename);
+            let _ = fs::remove_file(filename);
+        }),
+    );
+
     appsrc.set_callbacks(
-        // Since our appsrc element operates in pull mode (it asks us to provide data),
-        // we add a handler for the need-data callback and provide new data from there.
-        // In our case, we told gstreamer that we do 2 frames per second. While the
-        // buffers of all elements of the pipeline are still empty, this will be called
-        // a couple of times until all of them are filled. After this initial period,
-        // this handler will be called (on average) twice per second.
         gst_app::AppSrcCallbacks::builder()
             .need_data(move |appsrc, _| {
                 let ts = begin.elapsed().as_millis() as u64;
@@ -131,6 +220,53 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
                         buffer[i + 2] = (payload.pixels[j].x * 255.0) as u8;
                     }
                 }
+                let tile = payload.addr.y * TILES_X + payload.addr.x;
+
+                if let Some(old_client_id) = acc_guard.meta_state.tiles[tile] {
+                    let mut old_client = acc_guard
+                        .meta_state
+                        .clients
+                        .get_mut(&old_client_id)
+                        .unwrap();
+                    old_client.current_count -= 1;
+                    if old_client.current_count == 0 {
+                        acc_guard.meta_state.clients.remove(&old_client_id);
+                    }
+                }
+                acc_guard.meta_state.tiles[tile] = Some(payload.client_id);
+
+                let client = acc_guard
+                    .meta_state
+                    .clients
+                    .entry(payload.client_id)
+                    .or_insert_with(|| ClientState {
+                        current_count: 0,
+                        total_count: 0,
+                        average_time: payload.time,
+                        name: String::new(),
+                    });
+
+                let name_changed = client.name != payload.name;
+                if name_changed {
+                    client.name = payload.name.clone();
+                }
+                client.average_time = client.average_time * 0.99 + payload.time * 0.01;
+                client.current_count += 1;
+                client.total_count += 1;
+
+                acc_guard.meta_actions.push(MetaAction {
+                    ts: begin.elapsed().as_millis() as u64,
+                    payload: MetaActionPayload::BlitTile(MetaBlitTile {
+                        client_id: payload.client_id,
+                        tile,
+                        time: payload.time,
+                        name: if name_changed {
+                            Some(payload.name)
+                        } else {
+                            None
+                        },
+                    }),
+                });
             }
         }
     }

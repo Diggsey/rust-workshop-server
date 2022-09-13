@@ -6,6 +6,11 @@
     <title>My live video</title>
     <!-- <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet"> -->
     <!-- <script src="http://cdn.dashjs.org/latest/dash.all.min.js"></script> -->
+    <style>
+        #info {
+            float: right;
+        }
+    </style>
 </head>
 
 <body>
@@ -23,16 +28,97 @@
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
     <video id="video" muted autoplay></video>
+    <div id="info"></div>
     <script>
         var video = document.getElementById('video');
-        var videoSrc = 'playlist.m3u8';
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-            video.src = videoSrc;
-        } else if (Hls.isSupported()) {
+        var infoElem = document.getElementById('info');
+        var videoSrc = 'livevideo/playlist.m3u8';
+        if (Hls.isSupported()) {
             var hls = new Hls();
+            var metaActions = [];
+            var metaState = {
+                tiles: [null],
+                clients: {},
+                tiles_x: 1,
+                tiles_y: 1,
+            };
+            var tileX = 0;
+            var tileY = 0;
+            var videoOffset = 0;
             hls.on(Hls.Events.ERROR, (_, e) => console.dir(e));
+            hls.on(Hls.Events.FRAG_LOADING, (_, e) => {
+                fetch(e.frag.url + '.json')
+                    .then(resp => resp.json())
+                    .then(data => {
+                        e.frag.ts = data[0].ts
+                        // Only add the actions if they were returned in the correct time order
+                        if (metaActions.length === 0 || metaActions[metaActions.length - 1].ts <= data[0].ts) {
+                            metaActions.push(...data);
+                        }
+                    });
+            });
+            hls.on(Hls.Events.FRAG_CHANGED, (_, e) => {
+                videoOffset = e.frag.ts - video.currentTime * 1000.0;
+            })
             hls.loadSource(videoSrc);
             hls.attachMedia(video);
+
+            video.addEventListener("mousemove", mouseHandler);
+
+            function mouseHandler(event) {
+                var rect = this.getBoundingClientRect();
+                tileX = (event.clientX - rect.left) / rect.width;
+                tileY = (event.clientY - rect.top) / rect.height;
+            }
+
+            function updateInfo() {
+                let currentTime = video.currentTime * 1000 + videoOffset;
+                while (metaActions.length > 0 && metaActions[0].ts <= currentTime) {
+                    var payload = metaActions[0].payload;
+                    //console.log(payload);
+
+                    metaActions = metaActions.slice(1);
+
+                    if (payload.snapshot) {
+                        metaState = payload.snapshot;
+                    } else if (payload.blitTile) {
+                        var prevClientId = metaState.tiles[payload.blitTile.tile];
+                        if (prevClientId !== null) {
+                            metaState.clients[prevClientId].current_count -= 1;
+                        }
+                        metaState.tiles[payload.blitTile.tile] = payload.blitTile.client_id;
+                        var client = metaState.clients[payload.blitTile.client_id];
+                        if (!client) {
+                            client = {
+                                current_count: 0,
+                                total_count: 0,
+                                average_time: payload.blitTile.time,
+                                name: payload.blitTile.name,
+                            };
+                            metaState.clients[payload.blitTile.client_id] = client;
+                        }
+                        client.current_count += 1;
+                        client.total_count += 1;
+                        client.average_time = client.average_time * 0.99 + payload.blitTile.time * 0.01;
+                        if (payload.blitTile.name !== null) {
+                            client.name = payload.blitTile.name;
+                        }
+                    }
+                }
+
+                var hoverTile = Math.floor(tileX * metaState.tiles_x) + Math.floor(tileY * metaState.tiles_y) * metaState.tiles_x;
+                var hoverClientId = metaState.tiles[hoverTile];
+                if (hoverClientId !== null) {
+                    infoElem.textContent = JSON.stringify(metaState.clients[hoverClientId], null, "  ");
+                } else {
+                    infoElem.textContent = "";
+                }
+
+                requestAnimationFrame(updateInfo);
+            }
+            requestAnimationFrame(updateInfo);
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            video.src = videoSrc;
         }
     </script>
 </body>

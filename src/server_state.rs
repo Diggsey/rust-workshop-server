@@ -33,6 +33,7 @@ struct InFlightTile {
     client_id: ClientId,
     addr: TileAddr,
     expires: Instant,
+    requested_at: Instant,
 }
 
 struct ServerState {
@@ -189,10 +190,12 @@ impl ServerState {
                         self.regenerate_scene();
                     }
                     if let Some(client) = self.clients.get_mut(&event.from_id) {
+                        let now = Instant::now();
                         self.in_flight_tiles.push_back(InFlightTile {
                             client_id: event.from_id,
                             addr,
-                            expires: Instant::now() + Duration::from_secs(5),
+                            expires: now + Duration::from_secs(5),
+                            requested_at: now,
                         });
                         let _ = client
                             .tx
@@ -220,6 +223,8 @@ impl ServerState {
                         {
                             let in_flight_tile = self.in_flight_tiles.remove(idx).unwrap();
                             let _ = self.tx.send(OutputEvent::BlitTile(BlitTileEvent {
+                                client_id: event.from_id,
+                                time: in_flight_tile.requested_at.elapsed().as_secs_f64(),
                                 addr: in_flight_tile.addr,
                                 name: client.name.clone(),
                                 pixels: results

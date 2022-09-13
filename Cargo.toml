@@ -18,10 +18,11 @@ dotenvy = "0.15.3"
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.4.11", features = ["make"] }
 tower-http = { version = "0.3.4", features = ["fs", "set-header"] }
-glib = { git = "https://github.com/gtk-rs/gtk-rs-core" }
-gst = { package = "gstreamer" }
-gst-app = { package = "gstreamer-app" }
-gst-base = { package = "gstreamer-base" }
-gst-video = { package = "gstreamer-video" }
-ges = { package = "gstreamer-editing-services" }
-gst-pbutils = { package = "gstreamer-pbutils" }
+glib = "0.15"
+gst = { package = "gstreamer", verson = "0.18.8" }
+gst-app = { package = "gstreamer-app", verson = "0.18.7" }
+gst-base = { package = "gstreamer-base", verson = "0.18.0" }
+gst-video = { package = "gstreamer-video", verson = "0.18.7" }
+ges = { package = "gstreamer-editing-services", verson = "0.18.3" }
+gst-pbutils = { package = "gstreamer-pbutils", verson = "0.18.7" }
+gio = "0.15"

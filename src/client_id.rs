@@ -1,6 +1,8 @@
 use std::sync::atomic::{self, AtomicU64};
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+use serde::Serialize;
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct ClientId(pub u64);
 
 impl ClientId {

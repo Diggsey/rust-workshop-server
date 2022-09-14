@@ -3,36 +3,95 @@
 
 <head>
     <meta charset=utf-8 />
-    <title>My live video</title>
-    <!-- <link href="https://unpkg.com/video.js/dist/video-js.css" rel="stylesheet"> -->
-    <!-- <script src="http://cdn.dashjs.org/latest/dash.all.min.js"></script> -->
+    <title>Rust Workshop</title>
     <style>
+        body {
+            font-family: sans-serif;
+            background-color: black;
+            color: white;
+            cursor: default;
+        }
+
         #info {
             float: right;
+            table-layout: fixed;
+            border-collapse: collapse;
+            width: 700px;
+            text-align: right;
+            font-size: 16px;
+            border-style: none;
+        }
+
+        #info th {
+            cursor: pointer;
+            padding: 2px 10px;
+        }
+
+        #info td {
+            font-family: monospace;
+            padding: 2px 10px;
+        }
+
+        #info th:nth-child(1) {
+            width: 50px;
+        }
+
+        #info th:nth-child(2),
+        #info td:nth-child(2) {
+            text-align: center;
+        }
+
+        .hoverRow,
+        .sortedColumn {
+            background-color: #800080;
+        }
+
+        .tileIndicator {
+            pointer-events: none;
+            position: fixed;
+            border: 1px solid white;
+            outline: 1px solid black;
+            box-sizing: border-box;
         }
     </style>
 </head>
 
 <body>
-    <h1>My live video - simple HLS player</h1>
-
-    <!-- <video-js id="video_id" class="vjs-default-skin" controls preload="auto" width="640" height="360">
-        <source src="http://localhost/playlist.m3u8" type="application/x-mpegURL">
-    </video-js> -->
-    <!-- <video data-dashjs-player autoplay src="dash.mpd" controls="true"></video> -->
-    <!-- <script src="https://unpkg.com/video.js/dist/video.js"></script>
-    <script src="https://unpkg.com/@videojs/http-streaming/dist/videojs-http-streaming.js"></script>
-    <script>
-        var player = videojs('video_id');
-    </script> -->
+    <h1>Rust Workshop</h1>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
     <video id="video" muted autoplay></video>
-    <div id="info"></div>
+    <table id="info">
+        <thead>
+            <tr>
+                <th>Pos.</th>
+                <th onclick="sortKey = 'name'">Name</th>
+                <th onclick="sortKey = 'average_time'">Average Time (s)</th>
+                <th onclick="sortKey = 'current_count'">Current Count</th>
+                <th onclick="sortKey = 'total_count'">Total Count</th>
+            </tr>
+        </thead>
+        <tbody>
+        </tbody>
+    </table>
     <script>
         var video = document.getElementById('video');
-        var infoElem = document.getElementById('info');
+        var infoTable = document.getElementById('info');
         var videoSrc = 'livevideo/playlist.m3u8';
+        var sortKey = 'average_time';
+        var columnKeys = ['name', 'average_time', 'current_count', 'total_count'];
+        var columnCompareFns = {
+            'name': (a, b) => a.localeCompare(b),
+            'average_time': (a, b) => a - b,
+            'current_count': (a, b) => b - a,
+            'total_count': (a, b) => b - a,
+        };
+        var columnFormatters = {
+            'average_time': a => a.toFixed(5)
+        };
+        const defaultFormatter = x => x;
+        var hoverClientId;
+
         if (Hls.isSupported()) {
             var hls = new Hls();
             var metaActions = [];
@@ -42,9 +101,11 @@
                 tiles_x: 1,
                 tiles_y: 1,
             };
-            var tileX = 0;
-            var tileY = 0;
+            var tileX = null;
+            var tileY = null;
+            var infoRow = null;
             var videoOffset = 0;
+            var tileIndicators = [];
             hls.on(Hls.Events.ERROR, (_, e) => console.dir(e));
             hls.on(Hls.Events.FRAG_LOADING, (_, e) => {
                 fetch(e.frag.url + '.json')
@@ -57,25 +118,125 @@
                         }
                     });
             });
-            hls.on(Hls.Events.FRAG_CHANGED, (_, e) => {
-                videoOffset = e.frag.ts - video.currentTime * 1000.0;
-            })
             hls.loadSource(videoSrc);
             hls.attachMedia(video);
 
-            video.addEventListener("mousemove", mouseHandler);
+            video.addEventListener("mousemove", videoMouseMove);
+            video.addEventListener("mouseleave", videoMouseLeave)
 
-            function mouseHandler(event) {
+            function videoMouseMove(event) {
                 var rect = this.getBoundingClientRect();
                 tileX = (event.clientX - rect.left) / rect.width;
                 tileY = (event.clientY - rect.top) / rect.height;
             }
 
+            function videoMouseLeave(event) {
+                tileX = null;
+                tileY = null;
+            }
+
+            function updateTable() {
+                var headerCells = infoTable.rows[0].cells;
+                for (let i = 1; i < headerCells.length; ++i) {
+                    let cell = headerCells[i];
+                    console.log(i, sortKey);
+                    if (columnKeys[i - 1] === sortKey) {
+                        cell.className = 'sortedColumn';
+                    } else {
+                        cell.className = '';
+                    }
+                }
+
+                var tableBody = infoTable.tBodies[0];
+                var clientList = Object.entries(metaState.clients);
+                var compareFn = columnCompareFns[sortKey];
+                clientList.sort((a, b) => compareFn(a[1][sortKey], b[1][sortKey]));
+
+                if (infoRow != null && infoRow < clientList.length) {
+                    hoverClientId = clientList[infoRow][0];
+                } else if (tileX != null && tileY != null) {
+                    var hoverTile = Math.floor(tileX * metaState.tiles_x) + Math.floor(tileY * metaState.tiles_y) * metaState.tiles_x;
+                    hoverClientId = metaState.tiles[hoverTile];
+                } else {
+                    hoverClientId = null;
+                }
+
+                for (let i = 0; i < clientList.length; ++i) {
+                    var client = clientList[i];
+                    var row;
+                    if (i >= tableBody.rows.length) {
+                        row = tableBody.insertRow(i);
+                        row.addEventListener("mouseenter", () => {
+                            infoRow = i;
+                        });
+                        row.addEventListener("mouseleave", () => {
+                            infoRow = null;
+                        })
+                        for (var j = 0; j <= columnKeys.length; ++j) {
+                            row.insertCell(j);
+                        }
+                    } else {
+                        row = tableBody.rows[i];
+                    }
+                    if (client[0] == hoverClientId) {
+                        row.className = 'hoverRow';
+                    } else {
+                        row.className = '';
+                    }
+                    row.cells[0].textContent = (i + 1).toString()
+
+                    for (var j = 0; j < columnKeys.length; ++j) {
+                        const columnKey = columnKeys[j];
+                        const columnFormatter = columnFormatters[columnKey] || defaultFormatter;
+                        row.cells[j + 1].textContent = columnFormatter(client[1][columnKey]);
+                    }
+                }
+                for (var i = tableBody.rows.length - 1; i >= clientList.length; --i) {
+                    tableBody.deleteRow(i);
+                }
+            }
+
+            function updateTileIndicators() {
+                var rect = video.getBoundingClientRect();
+                var currentTileIndicator = 0;
+                for (var y = 0; y < metaState.tiles_y; ++y) {
+                    for (var x = 0; x < metaState.tiles_x; ++x) {
+                        var tile = y * metaState.tiles_x + x;
+                        if (hoverClientId != null && metaState.tiles[tile] == hoverClientId) {
+                            var tileIndicator;
+                            if (tileIndicators.length <= currentTileIndicator) {
+                                tileIndicator = document.createElement('div');
+                                tileIndicator.className = 'tileIndicator';
+                                document.body.appendChild(tileIndicator);
+                                tileIndicators.push(tileIndicator);
+                            } else {
+                                tileIndicator = tileIndicators[currentTileIndicator];
+                            }
+                            tileIndicator.style.left = (1 + rect.left + rect.width * x / metaState.tiles_x) + 'px';
+                            tileIndicator.style.top = (1 + rect.top + rect.height * y / metaState.tiles_y) + 'px';
+                            tileIndicator.style.width = (rect.width / metaState.tiles_x - 1) + 'px';
+                            tileIndicator.style.height = (rect.height / metaState.tiles_y - 1) + 'px';
+
+                            currentTileIndicator += 1;
+                        }
+                    }
+                }
+                for (var i = tileIndicators.length - 1; i >= currentTileIndicator; --i) {
+                    var tileIndicator = tileIndicators.pop();
+                    tileIndicator.remove();
+                }
+            }
+
             function updateInfo() {
-                let currentTime = video.currentTime * 1000 + videoOffset;
+                let currentTime;
+                if (hls.playingDate == null) {
+                    currentTime = 0;
+                } else {
+                    const skew = 50;
+                    currentTime = hls.playingDate.getTime() + skew;
+                }
                 while (metaActions.length > 0 && metaActions[0].ts <= currentTime) {
                     var payload = metaActions[0].payload;
-                    //console.log(payload);
 
                     metaActions = metaActions.slice(1);
 
@@ -99,20 +260,15 @@
                         }
                         client.current_count += 1;
                         client.total_count += 1;
-                        client.average_time = client.average_time * 0.99 + payload.blitTile.time * 0.01;
+                        client.average_time = client.average_time * 0.999 + payload.blitTile.time * 0.001;
                         if (payload.blitTile.name !== null) {
                             client.name = payload.blitTile.name;
                         }
                     }
                 }
 
-                var hoverTile = Math.floor(tileX * metaState.tiles_x) + Math.floor(tileY * metaState.tiles_y) * metaState.tiles_x;
-                var hoverClientId = metaState.tiles[hoverTile];
-                if (hoverClientId !== null) {
-                    infoElem.textContent = JSON.stringify(metaState.clients[hoverClientId], null, "  ");
-                } else {
-                    infoElem.textContent = "";
-                }
+                updateTable();
+                updateTileIndicators();
 
                 requestAnimationFrame(updateInfo);
             }

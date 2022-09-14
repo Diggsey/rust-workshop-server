@@ -26,3 +26,4 @@ gst-video = { package = "gstreamer-video", verson = "0.18.7" }
 ges = { package = "gstreamer-editing-services", verson = "0.18.3" }
 gst-pbutils = { package = "gstreamer-pbutils", verson = "0.18.7" }
 gio = "0.15"
+chrono = "0.4.22"

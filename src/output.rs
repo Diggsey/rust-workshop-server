@@ -1,12 +1,17 @@
 use std::{
     collections::HashMap,
-    fs, mem,
+    fs,
+    io::{Cursor, Write},
+    mem,
     sync::{mpsc, Arc, Mutex},
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use gio::{traits::FileExt, Cancellable, File, FileCreateFlags, FileOutputStream};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use gio::{
+    traits::FileExt, Cancellable, File, FileCreateFlags, FileOutputStream, WriteOutputStream,
+};
 use gst::{
     prelude::{Cast, GstBinExtManual, ObjectExt},
     traits::ElementExt,
@@ -76,6 +81,72 @@ struct Accumulator {
     meta_filename: String,
 }
 
+struct PlaylistWriter {
+    filename: String,
+    inner: Cursor<Vec<u8>>,
+    playlist_state: Arc<Mutex<PlaylistState>>,
+}
+
+#[derive(Default)]
+struct PlaylistState {
+    last_sequence_no: u32,
+    total_elapsed: f64,
+    next_duration: f64,
+}
+
+impl Write for PlaylistWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Drop for PlaylistWriter {
+    fn drop(&mut self) {
+        let inner = mem::replace(self.inner.get_mut(), Vec::new());
+        self.inner.set_position(0);
+        let inner = String::from_utf8(inner).unwrap();
+        let mut written_program_date = false;
+        let mut sequence_no = 0;
+        for line in inner.lines() {
+            if !written_program_date {
+                if let Some(rest) = line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:") {
+                    sequence_no = rest.parse().unwrap();
+                }
+                if let Some(rest) = line.strip_prefix("#EXTINF:") {
+                    written_program_date = true;
+                    let segment_duration: f64 = rest.strip_suffix(",").unwrap().parse().unwrap();
+                    let elapsed = {
+                        let mut guard = self.playlist_state.lock().unwrap();
+                        if sequence_no > guard.last_sequence_no {
+                            guard.last_sequence_no = sequence_no;
+                            guard.total_elapsed += guard.next_duration;
+                        }
+                        guard.next_duration = segment_duration;
+                        guard.total_elapsed
+                    };
+                    let base_datetime =
+                        DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc);
+                    let datetime = base_datetime
+                        + chrono::Duration::from_std(Duration::from_secs_f64(elapsed)).unwrap();
+
+                    writeln!(
+                        self.inner,
+                        "#EXT-X-PROGRAM-DATE-TIME:{}\n",
+                        datetime.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    )
+                    .unwrap();
+                }
+            }
+            writeln!(self.inner, "{}", line).unwrap();
+        }
+        fs::write(&self.filename, self.inner.get_ref()).unwrap();
+    }
+}
+
 const WIDTH: usize = TILES_X * TILE_SIZE;
 const HEIGHT: usize = TILES_Y * TILE_SIZE;
 
@@ -88,6 +159,7 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     let videoconvert = gst::ElementFactory::make("videoconvert", None)?;
     let encode = gst::ElementFactory::make("x264enc", None)?;
     let caps = gst::ElementFactory::make("capsfilter", None)?;
+    let parse = gst::ElementFactory::make("h264parse", None)?;
     let sink = gst::ElementFactory::make("hlssink2", None)?;
 
     // src.set_property("is-live", true);
@@ -101,8 +173,8 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     sink.set_property("playlist-location", "static/livevideo/playlist.m3u8");
     sink.set_property("target-duration", 3u32);
 
-    pipeline.add_many(&[&src, &videoconvert, &encode, &caps, &sink])?;
-    gst::Element::link_many(&[&src, &videoconvert, &encode, &caps, &sink])?;
+    pipeline.add_many(&[&src, &videoconvert, &encode, &caps, &parse, &sink])?;
+    gst::Element::link_many(&[&src, &videoconvert, &encode, &caps, &parse, &sink])?;
 
     let appsrc = src
         .dynamic_cast::<gst_app::AppSrc>()
@@ -132,8 +204,22 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     }));
     let acc2 = acc.clone();
     let acc3 = acc.clone();
+    let playlist_state = Arc::new(Mutex::new(PlaylistState::default()));
 
     let begin = Instant::now();
+    sink.connect_closure(
+        "get-playlist-stream",
+        false,
+        glib::closure!(
+            move |_elem: &Element, filename: &str| -> WriteOutputStream {
+                WriteOutputStream::new(PlaylistWriter {
+                    filename: filename.into(),
+                    inner: Cursor::new(Vec::new()),
+                    playlist_state: playlist_state.clone(),
+                })
+            }
+        ),
+    );
     sink.connect_closure(
         "get-fragment-stream",
         false,
@@ -157,7 +243,7 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
             }
 
             let file = File::for_path(filename);
-            file.create(FileCreateFlags::REPLACE_DESTINATION, Cancellable::NONE)
+            file.replace(None, false, FileCreateFlags::NONE, Cancellable::NONE)
                 .unwrap()
         }),
     );
@@ -174,15 +260,15 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     appsrc.set_callbacks(
         gst_app::AppSrcCallbacks::builder()
             .need_data(move |appsrc, _| {
-                let ts = begin.elapsed().as_millis() as u64;
                 // Create the buffer that can hold exactly one BGRx frame.
                 let mut buffer = gst::Buffer::with_size(video_info.size()).unwrap();
                 let buffer_ref = buffer.get_mut().unwrap();
-                buffer_ref.set_pts(ts * gst::ClockTime::MSECOND);
                 {
                     let acc_guard = acc.lock().unwrap();
                     buffer_ref.copy_from_slice(0, &acc_guard.data).unwrap();
                 }
+                let ts = begin.elapsed().as_millis() as u64;
+                buffer_ref.set_pts(ts * gst::ClockTime::MSECOND);
 
                 // appsrc already handles the error here
                 let _ = appsrc.push_buffer(buffer);
@@ -250,7 +336,7 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
                 if name_changed {
                     client.name = payload.name.clone();
                 }
-                client.average_time = client.average_time * 0.99 + payload.time * 0.01;
+                client.average_time = client.average_time * 0.999 + payload.time * 0.001;
                 client.current_count += 1;
                 client.total_count += 1;
 

@@ -76,6 +76,7 @@ struct MetaAction {
 
 struct Accumulator {
     data: Vec<u8>,
+    frame_done: bool,
     meta_state: MetaState,
     meta_actions: Vec<MetaAction>,
     meta_filename: String,
@@ -155,14 +156,22 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
 
     let pipeline = gst::Pipeline::new(None);
     let src = gst::ElementFactory::make("appsrc", None)?;
-    // let src = gst::ElementFactory::make("videotestsrc", None)?;
     let videoconvert = gst::ElementFactory::make("videoconvert", None)?;
     let encode = gst::ElementFactory::make("x264enc", None)?;
     let caps = gst::ElementFactory::make("capsfilter", None)?;
     let parse = gst::ElementFactory::make("h264parse", None)?;
     let sink = gst::ElementFactory::make("hlssink2", None)?;
 
-    // src.set_property("is-live", true);
+    let file_pipeline = gst::Pipeline::new(None);
+    let file_src = gst::ElementFactory::make("appsrc", None)?;
+    let file_videoconvert = gst::ElementFactory::make("videoconvert", None)?;
+    let file_encode = gst::ElementFactory::make("x264enc", None)?;
+    let file_caps = gst::ElementFactory::make("capsfilter", None)?;
+    let file_parse = gst::ElementFactory::make("h264parse", None)?;
+    // let file_mux = gst::ElementFactory::make("mp4mux", None)?;
+    let file_mux = gst::ElementFactory::make("mpegtsmux", None)?;
+    let file_sink = gst::ElementFactory::make("filesink", None)?;
+
     caps.set_property(
         "caps",
         gst::Caps::builder("video/x-h264")
@@ -173,12 +182,38 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     sink.set_property("playlist-location", "static/livevideo/playlist.m3u8");
     sink.set_property("target-duration", 3u32);
 
-    pipeline.add_many(&[&src, &videoconvert, &encode, &caps, &parse, &sink])?;
-    gst::Element::link_many(&[&src, &videoconvert, &encode, &caps, &parse, &sink])?;
+    file_encode.set_property("bitrate", 8092u32);
+    file_caps.set_property(
+        "caps",
+        gst::Caps::builder("video/x-h264")
+            .field("profile", "high")
+            .build(),
+    );
+    let ts = Utc::now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        .replace(":", "-");
+    file_sink.set_property("location", format!("static/recording/{ts}.ts"));
 
-    let appsrc = src
-        .dynamic_cast::<gst_app::AppSrc>()
-        .expect("Source element is expected to be an appsrc!");
+    pipeline.add_many(&[&src, &videoconvert, &encode, &caps, &parse, &sink])?;
+    file_pipeline.add_many(&[
+        &file_src,
+        &file_videoconvert,
+        &file_encode,
+        &file_caps,
+        &file_parse,
+        &file_mux,
+        &file_sink,
+    ])?;
+    gst::Element::link_many(&[&src, &videoconvert, &encode, &caps, &parse, &sink])?;
+    gst::Element::link_many(&[
+        &file_src,
+        &file_videoconvert,
+        &file_encode,
+        &file_caps,
+        &file_parse,
+        &file_mux,
+        &file_sink,
+    ])?;
 
     let video_info =
         gst_video::VideoInfo::builder(gst_video::VideoFormat::Bgrx, WIDTH as u32, HEIGHT as u32)
@@ -188,11 +223,24 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     let stride = video_info.stride()[0] as usize;
     let offset = video_info.offset()[0] as usize;
 
+    let appsrc = src
+        .dynamic_cast::<gst_app::AppSrc>()
+        .expect("Source element is expected to be an appsrc!");
+
     appsrc.set_caps(Some(&video_info.to_caps().unwrap()));
     appsrc.set_format(gst::Format::Time);
+    appsrc.set_is_live(true);
+
+    let file_appsrc = file_src
+        .dynamic_cast::<gst_app::AppSrc>()
+        .expect("Source element is expected to be an appsrc!");
+
+    file_appsrc.set_caps(Some(&video_info.to_caps().unwrap()));
+    file_appsrc.set_format(gst::Format::Time);
 
     let acc = Arc::new(Mutex::new(Accumulator {
         data: vec![0x40; video_info.size()],
+        frame_done: false,
         meta_state: MetaState {
             tiles: vec![None; TILES_X * TILES_Y],
             clients: HashMap::new(),
@@ -257,19 +305,28 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
         }),
     );
 
+    let mut i = 0;
     appsrc.set_callbacks(
         gst_app::AppSrcCallbacks::builder()
             .need_data(move |appsrc, _| {
                 // Create the buffer that can hold exactly one BGRx frame.
                 let mut buffer = gst::Buffer::with_size(video_info.size()).unwrap();
                 let buffer_ref = buffer.get_mut().unwrap();
-                {
-                    let acc_guard = acc.lock().unwrap();
+                let frame_done = {
+                    let mut acc_guard = acc.lock().unwrap();
                     buffer_ref.copy_from_slice(0, &acc_guard.data).unwrap();
-                }
+                    mem::replace(&mut acc_guard.frame_done, false)
+                };
                 let ts = begin.elapsed().as_millis() as u64;
                 buffer_ref.set_pts(ts * gst::ClockTime::MSECOND);
 
+                if frame_done {
+                    let mut buffer = buffer.copy();
+                    let buffer_ref = buffer.get_mut().unwrap();
+                    buffer_ref.set_pts(Some(i * 33 * gst::ClockTime::MSECOND));
+                    i += 1;
+                    let _ = file_appsrc.push_buffer(buffer);
+                }
                 // appsrc already handles the error here
                 let _ = appsrc.push_buffer(buffer);
             })
@@ -277,11 +334,22 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     );
 
     pipeline.set_state(gst::State::Playing)?;
+    file_pipeline.set_state(gst::State::Playing)?;
 
     let bus = pipeline.bus().unwrap();
-
     thread::spawn(move || {
         for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            match msg.view() {
+                MessageView::Eos(..) => break,
+                MessageView::Error(err) => eprintln!("{:?}", err),
+                _ => {}
+            }
+        }
+    });
+
+    let file_bus = file_pipeline.bus().unwrap();
+    thread::spawn(move || {
+        for msg in file_bus.iter_timed(gst::ClockTime::NONE) {
             match msg.view() {
                 MessageView::Eos(..) => break,
                 MessageView::Error(err) => eprintln!("{:?}", err),
@@ -294,6 +362,10 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
         match event {
             OutputEvent::BlitTile(payload) => {
                 let mut acc_guard = acc2.lock().unwrap();
+                if payload.addr.x == TILES_X - 1 && payload.addr.y == TILES_Y - 1 {
+                    acc_guard.frame_done = true;
+                }
+
                 let buffer = &mut *acc_guard.data;
                 for y in 0..TILE_SIZE {
                     for x in 0..TILE_SIZE {

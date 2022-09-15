@@ -9,7 +9,7 @@ pub enum Request {
     SetName(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct Vec3 {
     pub x: f64,
     pub y: f64,

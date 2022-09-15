@@ -1,8 +1,16 @@
-use std::{fs, net::TcpListener, sync::mpsc, thread};
+use std::{
+    fs,
+    net::{SocketAddr, TcpListener},
+    path::PathBuf,
+    sync::mpsc,
+    thread,
+};
 
 use client_id::ClientId;
 use log::error;
 use protocol::{Request, Response};
+use serde::Deserialize;
+use structopt::StructOpt;
 
 use crate::{client_handler::client_connected, output::output_thread, server_state::server_thread};
 
@@ -34,20 +42,42 @@ pub enum ClientCommand {
     Response(Response),
 }
 
+#[derive(Deserialize)]
+struct SceneElement {
+    x: f64,
+    y: f64,
+    z: f64,
+    r: f64,
+}
+
+#[derive(StructOpt)]
+struct Opt {
+    scene_filename: PathBuf,
+    #[structopt(short, long, default_value = "0.0.0.0:1234")]
+    addr: SocketAddr,
+}
+
 fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     let _ = pretty_env_logger::try_init();
+    let opt = Opt::from_args();
 
     // Wipe the live video directory before starting
     let _ = fs::remove_dir_all("static/livevideo");
     fs::create_dir_all("static/livevideo")?;
+    fs::create_dir_all("static/recording")?;
 
-    let listener = TcpListener::bind("0.0.0.0:1234")?;
+    let scene_reader = csv::Reader::from_path(opt.scene_filename)?;
+    let scene_elements = scene_reader
+        .into_deserialize()
+        .collect::<Result<Vec<SceneElement>, _>>()?;
+
+    let listener = TcpListener::bind(opt.addr)?;
     let (client_tx, client_rx) = mpsc::sync_channel(256);
     let (output_tx, output_rx) = mpsc::sync_channel(256);
 
-    thread::spawn(move || output_thread(output_rx));
-    thread::spawn(move || server_thread(client_rx, output_tx));
+    thread::spawn(move || output_thread(output_rx).unwrap());
+    thread::spawn(move || server_thread(client_rx, output_tx, scene_elements));
     thread::spawn(move || http::run_server());
 
     for stream in listener.incoming() {

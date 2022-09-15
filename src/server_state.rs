@@ -4,11 +4,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rand::{distributions::Uniform, prelude::Distribution, thread_rng};
+
 use crate::{
     client_id::ClientId,
     output::{BlitTileEvent, OutputEvent},
     protocol::{Ray, Request, Response, Scene, Sphere, Vec3},
-    ClientCommand, ClientEvent, ClientEventPayload, TILES_X, TILES_Y, TILE_SIZE,
+    ClientCommand, ClientEvent, ClientEventPayload, SceneElement, TILES_X, TILES_Y, TILE_SIZE,
 };
 
 struct ClientState {
@@ -46,14 +48,16 @@ struct ServerState {
     current_frame: u64,
     scene: Arc<Scene>,
     all_rays: Vec<Arc<Vec<Ray>>>,
+    random_displacements: Vec<Vec3>,
+    scene_elements: Vec<SceneElement>,
 }
 
 fn generate_ray(x: usize, y: usize) -> Ray {
     let fx = (x as f64) / ((TILES_X * TILE_SIZE) as f64) - 0.5;
     let fy = (y as f64) / ((TILES_Y * TILE_SIZE) as f64) - 0.5;
     let mut direction = Vec3 {
-        x: fx,
-        y: fy,
+        x: fx * 0.25,
+        y: fy * 0.25,
         z: 1.0,
     };
     direction.normalize();
@@ -61,7 +65,7 @@ fn generate_ray(x: usize, y: usize) -> Ray {
         origin: Vec3 {
             x: 0.0,
             y: 0.0,
-            z: 0.0,
+            z: -350.0,
         },
         direction,
     }
@@ -82,9 +86,24 @@ fn generate_all_rays() -> Vec<Arc<Vec<Ray>>> {
     }
     res
 }
+fn generate_random_displacements(count: usize) -> Vec<Vec3> {
+    let mut rng = thread_rng();
+    let distr = Uniform::new_inclusive(-1.0, 1.0);
+    (0..count)
+        .map(|_| Vec3 {
+            x: distr.sample(&mut rng),
+            y: distr.sample(&mut rng),
+            z: distr.sample(&mut rng),
+        })
+        .collect()
+}
 
 impl ServerState {
-    fn new(rx: mpsc::Receiver<ClientEvent>, tx: mpsc::SyncSender<OutputEvent>) -> Self {
+    fn new(
+        rx: mpsc::Receiver<ClientEvent>,
+        tx: mpsc::SyncSender<OutputEvent>,
+        scene_elements: Vec<SceneElement>,
+    ) -> Self {
         Self {
             rx,
             tx,
@@ -95,6 +114,8 @@ impl ServerState {
             current_frame: 0,
             scene: Default::default(),
             all_rays: generate_all_rays(),
+            random_displacements: generate_random_displacements(scene_elements.len()),
+            scene_elements,
         }
     }
     fn pop_tile_addr(&mut self) -> TileAddr {
@@ -115,32 +136,25 @@ impl ServerState {
         }
     }
     fn regenerate_scene(&mut self) {
-        let mut spheres = Vec::new();
-        let frame_float = (self.current_frame as f64) * 0.01;
-        spheres.push(Sphere {
-            center: Vec3 {
-                x: frame_float.sin() * 10.0,
-                y: frame_float.cos() * 10.0,
-                z: 0.0,
-            },
-            radius: 0.5,
-        });
-        spheres.push(Sphere {
-            center: Vec3 {
-                x: 2.0,
-                y: 3.0,
-                z: 5.0,
-            },
-            radius: frame_float.sin().abs() * 5.0 + 0.1,
-        });
-        spheres.push(Sphere {
-            center: Vec3 {
-                x: -2.0,
-                y: -1.0,
-                z: 3.0,
-            },
-            radius: 1.0,
-        });
+        let angle = (self.current_frame as f64) * 0.05;
+        let displacement = 1000.0 / (self.current_frame as f64 + 5.0);
+        let (sa, ca) = angle.sin_cos();
+        let spheres = self
+            .scene_elements
+            .iter()
+            .enumerate()
+            .map(|(i, elem)| {
+                let offset = self.random_displacements[i];
+                Sphere {
+                    center: Vec3 {
+                        x: elem.x * ca + elem.z * sa + offset.x * displacement,
+                        y: elem.y + offset.y * displacement,
+                        z: elem.z * ca - elem.x * sa + offset.z * displacement,
+                    },
+                    radius: elem.r,
+                }
+            })
+            .collect();
         self.scene = Arc::new(Scene {
             frame: self.current_frame,
             spheres,
@@ -256,6 +270,10 @@ impl ServerState {
     }
 }
 
-pub fn server_thread(rx: mpsc::Receiver<ClientEvent>, tx: mpsc::SyncSender<OutputEvent>) {
-    ServerState::new(rx, tx).run()
+pub(crate) fn server_thread(
+    rx: mpsc::Receiver<ClientEvent>,
+    tx: mpsc::SyncSender<OutputEvent>,
+    scene_elements: Vec<SceneElement>,
+) {
+    ServerState::new(rx, tx, scene_elements).run()
 }

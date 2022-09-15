@@ -22,9 +22,9 @@ mod output;
 mod protocol;
 mod server_state;
 
-const TILE_SIZE: usize = 64;
-const TILES_X: usize = 16;
-const TILES_Y: usize = 12;
+const TILE_SIZE: usize = 128;
+const TILES_X: usize = 8;
+const TILES_Y: usize = 6;
 
 #[derive(Debug)]
 pub struct ClientEvent {

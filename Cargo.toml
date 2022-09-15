@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 hyper = { version = "0.14", features = ["server", "tcp", "http1", "http2"] }
-anyhow = "1.0.64"
+anyhow = { version = "1.0.64", features = ["backtrace"] }
 log = "0.4.7"
 pretty_env_logger = "0.4.0"
 byteorder = "1.4.3"

@@ -37,7 +37,7 @@ impl ClientHandler {
         });
     }
     pub fn run(&mut self) -> anyhow::Result<()> {
-        let timeout = Some(Duration::from_secs(1));
+        let timeout = Some(Duration::from_secs(5));
         self.stream.set_read_timeout(timeout)?;
         self.stream.set_write_timeout(timeout)?;
         self.stream.set_nodelay(true)?;

@@ -136,8 +136,9 @@ impl ServerState {
         }
     }
     fn regenerate_scene(&mut self) {
-        let angle = (self.current_frame as f64) * 0.05;
-        let displacement = 1000.0 / (self.current_frame as f64 + 5.0);
+        let time = self.current_frame as f64 * 0.01;
+        let angle = time * 5.0;
+        let displacement = 1000.0 / (1.0 + time.tan().powi(2)).powi(4);
         let (sa, ca) = angle.sin_cos();
         let spheres = self
             .scene_elements

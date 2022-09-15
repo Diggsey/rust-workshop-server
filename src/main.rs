@@ -8,6 +8,7 @@ use std::{
 
 use client_id::ClientId;
 use log::error;
+use ordered_float::NotNan;
 use protocol::{Request, Response};
 use serde::Deserialize;
 use structopt::StructOpt;
@@ -68,9 +69,10 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all("static/recording")?;
 
     let scene_reader = csv::Reader::from_path(opt.scene_filename)?;
-    let scene_elements = scene_reader
+    let mut scene_elements = scene_reader
         .into_deserialize()
         .collect::<Result<Vec<SceneElement>, _>>()?;
+    scene_elements.sort_by_key(|elem| NotNan::new(elem.x).unwrap());
 
     let listener = TcpListener::bind(opt.addr)?;
     let (client_tx, client_rx) = mpsc::sync_channel(256);

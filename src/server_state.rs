@@ -136,7 +136,7 @@ impl ServerState {
         }
     }
     fn regenerate_scene(&mut self) {
-        let time = self.current_frame as f64 * 0.01;
+        let time = self.current_frame as f64 * 0.005;
         let angle = time * 5.0;
         let displacement = 1000.0 / (1.0 + time.tan().powi(2)).powi(4);
         let (sa, ca) = angle.sin_cos();
@@ -152,7 +152,7 @@ impl ServerState {
                         y: elem.y + offset.y * displacement,
                         z: elem.z * ca - elem.x * sa + offset.z * displacement,
                     },
-                    radius: elem.r,
+                    radius: elem.r + 1.0,
                 }
             })
             .collect();

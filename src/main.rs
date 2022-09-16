@@ -46,10 +46,10 @@ pub enum ClientCommand {
 
 #[derive(Deserialize)]
 struct SceneElement {
-    x: f64,
-    y: f64,
-    z: f64,
-    r: f64,
+    x: f32,
+    y: f32,
+    z: f32,
+    r: f32,
 }
 
 #[derive(StructOpt)]

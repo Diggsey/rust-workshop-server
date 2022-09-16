@@ -11,13 +11,13 @@ pub enum Request {
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct Vec3 {
-    pub x: f64,
-    pub y: f64,
-    pub z: f64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
 }
 
 impl Vec3 {
-    pub fn length(&self) -> f64 {
+    pub fn length(&self) -> f32 {
         (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
     pub fn normalize(&mut self) {
@@ -37,7 +37,7 @@ pub struct Ray {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Sphere {
     pub center: Vec3,
-    pub radius: f64,
+    pub radius: f32,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

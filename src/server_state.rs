@@ -54,8 +54,8 @@ struct ServerState {
 }
 
 fn generate_ray(x: usize, y: usize) -> Ray {
-    let fx = (x as f64) / ((TILES_X * TILE_SIZE) as f64) - 0.5;
-    let fy = (y as f64) / ((TILES_Y * TILE_SIZE) as f64) - 0.5;
+    let fx = (x as f32) / ((TILES_X * TILE_SIZE) as f32) - 0.5;
+    let fy = (y as f32) / ((TILES_Y * TILE_SIZE) as f32) - 0.5;
     let mut direction = Vec3 {
         x: fx * 0.25,
         y: fy * 0.25,
@@ -137,7 +137,7 @@ impl ServerState {
         }
     }
     fn regenerate_scene(&mut self) {
-        let time = self.current_frame as f64 * 0.005;
+        let time = self.current_frame as f32 * 0.005;
         let angle = time * 5.0;
         let displacement = 1000.0 / (1.0 + time.tan().powi(2)).powi(4);
         let (sa, ca) = angle.sin_cos();

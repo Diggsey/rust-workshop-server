@@ -11,6 +11,7 @@ use crate::{
 };
 use anyhow::{anyhow, Context};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use snap::raw::{Decoder, Encoder};
 
 pub struct ClientHandler {
     id: ClientId,
@@ -47,7 +48,7 @@ impl ClientHandler {
         self.stream.set_nodelay(true)?;
 
         let protocol_version = self.stream.read_u32::<BigEndian>()?;
-        if protocol_version > 1 {
+        if protocol_version > 2 {
             return Err(anyhow!("Unknown protocol version: {protocol_version}"));
         }
 
@@ -66,7 +67,8 @@ impl ClientHandler {
 
             let request: Request = match protocol_version {
                 0 => serde_json::from_slice(&buffer)?,
-                1 => postcard::from_bytes(&buffer)?,
+                1 => serde_json::from_slice(&Decoder::new().decompress_vec(&buffer)?)?,
+                2 => postcard::from_bytes(&Decoder::new().decompress_vec(&buffer)?)?,
                 _ => unreachable!(),
             };
 
@@ -76,7 +78,8 @@ impl ClientHandler {
                 ClientCommand::Response(response) => {
                     let vec = match protocol_version {
                         0 => serde_json::to_vec(&response)?,
-                        1 => postcard::to_allocvec(&response)?,
+                        1 => Encoder::new().compress_vec(&serde_json::to_vec(&response)?)?,
+                        2 => Encoder::new().compress_vec(&postcard::to_allocvec(&response)?)?,
                         _ => unreachable!(),
                     };
                     self.stream.write_u32::<BigEndian>(vec.len() as u32)?;

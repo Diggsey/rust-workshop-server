@@ -6,7 +6,8 @@ use std::{
 };
 
 use crate::{
-    client_id::ClientId, protocol::Request, ClientCommand, ClientEvent, ClientEventPayload,
+    client_id::ClientId, protocol::Request, utils::SyncSenderExt, ClientCommand, ClientEvent,
+    ClientEventPayload,
 };
 use anyhow::{anyhow, Context};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -20,7 +21,7 @@ pub struct ClientHandler {
 
 impl ClientHandler {
     fn new(stream: TcpStream, tx: mpsc::SyncSender<ClientEvent>) -> Self {
-        let (tx2, rx) = mpsc::channel();
+        let (tx2, rx) = mpsc::sync_channel(16);
         let res = Self {
             id: ClientId::new(),
             stream,
@@ -31,10 +32,13 @@ impl ClientHandler {
         res
     }
     fn emit(&self, payload: ClientEventPayload) {
-        let _ = self.tx.send(ClientEvent {
-            from_id: self.id,
-            payload,
-        });
+        let _ = self.tx.send_realtime(
+            ClientEvent {
+                from_id: self.id,
+                payload,
+            },
+            "ClientHandler.tx",
+        );
     }
     pub fn run(&mut self) -> anyhow::Result<()> {
         let timeout = Some(Duration::from_secs(5));

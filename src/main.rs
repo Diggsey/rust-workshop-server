@@ -21,6 +21,7 @@ mod http;
 mod output;
 mod protocol;
 mod server_state;
+mod utils;
 
 const TILE_SIZE: usize = 128;
 const TILES_X: usize = 8;
@@ -34,7 +35,7 @@ pub struct ClientEvent {
 
 #[derive(Debug)]
 pub enum ClientEventPayload {
-    Connected(mpsc::Sender<ClientCommand>),
+    Connected(mpsc::SyncSender<ClientCommand>),
     Disconnected,
     Request(Request),
 }
@@ -75,8 +76,8 @@ fn main() -> anyhow::Result<()> {
     scene_elements.sort_by_key(|elem| NotNan::new(elem.x).unwrap());
 
     let listener = TcpListener::bind(opt.addr)?;
-    let (client_tx, client_rx) = mpsc::sync_channel(256);
-    let (output_tx, output_rx) = mpsc::sync_channel(256);
+    let (client_tx, client_rx) = mpsc::sync_channel(16);
+    let (output_tx, output_rx) = mpsc::sync_channel(16);
 
     thread::spawn(move || output_thread(output_rx).unwrap());
     thread::spawn(move || server_thread(client_rx, output_tx, scene_elements));

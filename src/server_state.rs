@@ -10,12 +10,13 @@ use crate::{
     client_id::ClientId,
     output::{BlitTileEvent, OutputEvent},
     protocol::{Ray, Request, Response, Scene, Sphere, Vec3},
+    utils::SyncSenderExt,
     ClientCommand, ClientEvent, ClientEventPayload, SceneElement, TILES_X, TILES_Y, TILE_SIZE,
 };
 
 struct ClientState {
     name: String,
-    tx: mpsc::Sender<ClientCommand>,
+    tx: mpsc::SyncSender<ClientCommand>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -212,57 +213,65 @@ impl ServerState {
                             expires: now + Duration::from_secs(5),
                             requested_at: now,
                         });
-                        let _ = client
-                            .tx
-                            .send(ClientCommand::Response(Response::ReserveRays(
+                        let _ = client.tx.send_realtime(
+                            ClientCommand::Response(Response::ReserveRays(
                                 self.all_rays[addr.rays_index()].clone(),
                                 self.scene.clone(),
-                            )));
+                            )),
+                            "ServerState.clients.tx",
+                        );
                     }
                 }
                 ClientEventPayload::Request(Request::SetName(name)) => {
                     if let Some(client) = self.clients.get_mut(&event.from_id) {
-                        let _ = client.tx.send(ClientCommand::Response(Response::SetName));
+                        let _ = client.tx.send_realtime(
+                            ClientCommand::Response(Response::SetName),
+                            "ServerState.clients.tx",
+                        );
                         client.name = name;
                     }
                 }
                 ClientEventPayload::Request(Request::SubmitResults(results)) => {
                     if let Some(client) = self.clients.get_mut(&event.from_id) {
-                        let _ = client
-                            .tx
-                            .send(ClientCommand::Response(Response::SubmitResults));
+                        let _ = client.tx.send_realtime(
+                            ClientCommand::Response(Response::SubmitResults),
+                            "ServerState.clients.tx",
+                        );
                         if let Some(idx) = self
                             .in_flight_tiles
                             .iter()
                             .position(|x| x.client_id == event.from_id)
                         {
                             let in_flight_tile = self.in_flight_tiles.remove(idx).unwrap();
-                            let _ = self.tx.send(OutputEvent::BlitTile(BlitTileEvent {
-                                client_id: event.from_id,
-                                time: in_flight_tile.requested_at.elapsed().as_secs_f64(),
-                                addr: in_flight_tile.addr,
-                                name: client.name.clone(),
-                                pixels: results
-                                    .into_iter()
-                                    .map(|result| {
-                                        if let Some(color) = result.color {
-                                            color
-                                        } else if result.hit {
-                                            Vec3 {
-                                                x: 1.0,
-                                                y: 1.0,
-                                                z: 1.0,
+                            let _ = self.tx.send_realtime(
+                                OutputEvent::BlitTile(BlitTileEvent {
+                                    client_id: event.from_id,
+                                    time: in_flight_tile.requested_at.elapsed().as_secs_f64(),
+                                    addr: in_flight_tile.addr,
+                                    name: client.name.clone(),
+                                    pixels: results
+                                        .into_iter()
+                                        .map(|result| {
+                                            if let Some(color) = result.color {
+                                                color
+                                            } else if result.hit {
+                                                Vec3 {
+                                                    x: 1.0,
+                                                    y: 1.0,
+                                                    z: 1.0,
+                                                }
+                                            } else {
+                                                Vec3 {
+                                                    x: 0.0,
+                                                    y: 0.0,
+                                                    z: 0.0,
+                                                }
                                             }
-                                        } else {
-                                            Vec3 {
-                                                x: 0.0,
-                                                y: 0.0,
-                                                z: 0.0,
-                                            }
-                                        }
-                                    })
-                                    .collect(),
-                            }));
+                                        })
+                                        .collect(),
+                                }),
+                                "ServerState.tx",
+                            );
                         }
                     }
                 }

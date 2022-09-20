@@ -2,8 +2,11 @@ use std::{
     collections::HashMap,
     fs,
     io::{Cursor, Write},
-    mem,
-    sync::{mpsc, Arc, Mutex},
+    mem, process,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -151,7 +154,10 @@ impl Drop for PlaylistWriter {
 const WIDTH: usize = TILES_X * TILE_SIZE;
 const HEIGHT: usize = TILES_Y * TILE_SIZE;
 
-pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
+pub fn output_thread(
+    rx: mpsc::Receiver<OutputEvent>,
+    term_now: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
     gst::init()?;
 
     let pipeline = gst::Pipeline::new(None);
@@ -329,6 +335,12 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
                 }
                 // appsrc already handles the error here
                 let _ = appsrc.push_buffer(buffer);
+
+                // If Ctrl+C is pressed, end the recording
+                if term_now.load(Ordering::Relaxed) {
+                    println!("Finalizing video recording...");
+                    file_appsrc.end_of_stream().unwrap();
+                }
             })
             .build(),
     );
@@ -351,7 +363,10 @@ pub fn output_thread(rx: mpsc::Receiver<OutputEvent>) -> anyhow::Result<()> {
     thread::spawn(move || {
         for msg in file_bus.iter_timed(gst::ClockTime::NONE) {
             match msg.view() {
-                MessageView::Eos(..) => break,
+                MessageView::Eos(..) => {
+                    println!("Video recording saved. Exiting.");
+                    process::exit(0);
+                }
                 MessageView::Error(err) => eprintln!("{:?}", err),
                 _ => {}
             }

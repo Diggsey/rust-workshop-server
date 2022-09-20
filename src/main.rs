@@ -2,7 +2,7 @@ use std::{
     fs,
     net::{SocketAddr, TcpListener},
     path::PathBuf,
-    sync::mpsc,
+    sync::{atomic::AtomicBool, mpsc, Arc},
     thread,
 };
 
@@ -11,6 +11,7 @@ use log::error;
 use ordered_float::NotNan;
 use protocol::{Request, Response};
 use serde::Deserialize;
+use signal_hook::{consts::TERM_SIGNALS, flag};
 use structopt::StructOpt;
 
 use crate::{client_handler::client_connected, output::output_thread, server_state::server_thread};
@@ -69,6 +70,18 @@ fn main() -> anyhow::Result<()> {
     fs::create_dir_all("static/livevideo")?;
     fs::create_dir_all("static/recording")?;
 
+    // Make sure double CTRL+C and similar kills
+    let term_now = Arc::new(AtomicBool::new(false));
+    for sig in TERM_SIGNALS {
+        // When terminated by a second term signal, exit with exit code 1.
+        // This will do nothing the first time (because term_now is false).
+        flag::register_conditional_shutdown(*sig, 1, Arc::clone(&term_now))?;
+        // But this will "arm" the above for the second time, by setting it to true.
+        // The order of registering these is important, if you put this one first, it will
+        // first arm and then terminate ‒ all in the first round.
+        flag::register(*sig, Arc::clone(&term_now))?;
+    }
+
     let scene_reader = csv::Reader::from_path(opt.scene_filename)?;
     let mut scene_elements = scene_reader
         .into_deserialize()
@@ -79,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     let (client_tx, client_rx) = mpsc::sync_channel(16);
     let (output_tx, output_rx) = mpsc::sync_channel(16);
 
-    thread::spawn(move || output_thread(output_rx).unwrap());
+    thread::spawn(move || output_thread(output_rx, term_now).unwrap());
     thread::spawn(move || server_thread(client_rx, output_tx, scene_elements));
     thread::spawn(move || http::run_server());
 
